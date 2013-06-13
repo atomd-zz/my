@@ -1,22 +1,33 @@
 package lockservice
 
 import "net/rpc"
+import "crypto/rand"
+import "math/big"
 
 //
 // the lockservice Clerk lives in the client
 // and maintains a little state.
 //
 type Clerk struct {
+  id int64 // client id
   servers [2]string // primary port, backup port
-  // Your definitions here.
+  req_id int64
 }
 
+// Generate numbers that have a high probability of being unique
+func nrand() int64 {
+  max := big.NewInt(int64(1) << 62)
+  bigx, _ := rand.Int(rand.Reader, max)
+  x := bigx.Int64()
+  return x
+}
 
 func MakeClerk(primary string, backup string) *Clerk {
   ck := new(Clerk)
   ck.servers[0] = primary
   ck.servers[1] = backup
-  // Your initialization code here.
+  ck.id = nrand()
+  // ck.req_id = 0
   return ck
 }
 
@@ -43,13 +54,14 @@ func call(srv string, rpcname string,
     return false
   }
   defer c.Close()
-    
+
   err := c.Call(rpcname, args, reply)
   if err == nil {
     return true
   }
   return false
 }
+
 
 //
 // ask the lock service for a lock.
@@ -60,17 +72,19 @@ func call(srv string, rpcname string,
 //
 func (ck *Clerk) Lock(lockname string) bool {
   // prepare the arguments.
-  args := &LockArgs{}
-  args.Lockname = lockname
+  ck.req_id++
+  args := &LockArgs{ck.id, ck.req_id, lockname}
   var reply LockReply
-  
-  // send an RPC request, wait for the reply.
-  ok := call(ck.servers[0], "LockServer.Lock", args, &reply)
-  if ok == false {
-    return false
+
+  // if the primary does not respond, it sends an RPC to the backup.
+  for i := 0; i < 2; i++ {
+    // send an RPC request, wait for the reply.
+    ok := call(ck.servers[i], "LockServer.Lock", args, &reply)
+    if ok == true {
+        return reply.OK
+    }
   }
-  
-  return reply.OK
+  return false
 }
 
 
@@ -82,7 +96,17 @@ func (ck *Clerk) Lock(lockname string) bool {
 
 func (ck *Clerk) Unlock(lockname string) bool {
 
-  // Your code here.
+  ck.req_id++
+  args := &UnlockArgs{ck.id, ck.req_id, lockname}
+  var reply LockReply
 
+  // if the primary does not respond, it sends an RPC to the backup.
+  for i := 0; i < 2; i++ {
+    // send an RPC request, wait for the reply.
+    ok := call(ck.servers[i], "LockServer.Unlock", args, &reply)
+    if ok == true {
+        return reply.OK
+    }
+  }
   return false
 }

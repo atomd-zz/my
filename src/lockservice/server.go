@@ -9,6 +9,11 @@ import "os"
 import "io"
 import "time"
 
+type ReqInfo struct {
+  req_id int64
+  result bool
+}
+
 type LockServer struct {
   mu sync.Mutex
   l net.Listener
@@ -20,6 +25,7 @@ type LockServer struct {
 
   // for each lock name, is it locked?
   locks map[string]bool
+  reqs map[int64]ReqInfo
 }
 
 
@@ -29,11 +35,22 @@ type LockServer struct {
 // you will have to modify this function
 //
 func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
+
   ls.mu.Lock()
   defer ls.mu.Unlock()
 
-
   locked, _ := ls.locks[args.Lockname]
+  last_req, here := ls.reqs[args.ClientID]
+
+  if here && last_req.req_id == args.RequestID {
+    reply.OK = last_req.result
+    return nil
+  }
+
+  if ls.am_primary {
+    var br LockReply
+    call(ls.backup, "LockServer.Lock", args, &br)
+  }
 
   if locked {
     reply.OK = false
@@ -42,6 +59,7 @@ func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
     ls.locks[args.Lockname] = true
   }
 
+  ls.reqs[args.ClientID] = ReqInfo{args.RequestID, reply.OK}
   return nil
 }
 
@@ -50,8 +68,30 @@ func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
 //
 func (ls *LockServer) Unlock(args *UnlockArgs, reply *UnlockReply) error {
 
-  // Your code here.
+  ls.mu.Lock()
+  defer ls.mu.Unlock()
 
+  locked, _ := ls.locks[args.Lockname]
+  last_req, here := ls.reqs[args.ClientID]
+
+  if here && last_req.req_id == args.RequestID {
+    reply.OK = last_req.result
+    return nil
+  }
+
+  if ls.am_primary {
+      var br LockReply
+      call(ls.backup, "LockServer.Unlock", args, &br)
+  }
+
+  if locked {
+    reply.OK = true
+    ls.locks[args.Lockname] = false
+  } else {
+    reply.OK = false
+  }
+
+  ls.reqs[args.ClientID] = ReqInfo{args.RequestID, reply.OK}
   return nil
 }
 
@@ -90,9 +130,7 @@ func StartServer(primary string, backup string, am_primary bool) *LockServer {
   ls.backup = backup
   ls.am_primary = am_primary
   ls.locks = map[string]bool{}
-
-  // Your initialization code here.
-
+  ls.reqs = map[int64]ReqInfo{}
 
   me := ""
   if am_primary {

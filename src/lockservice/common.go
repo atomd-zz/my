@@ -13,6 +13,8 @@ package lockservice
 type LockArgs struct {
   // Go's net/rpc requires that these field
   // names start with upper case letters!
+  ClientID int64
+  RequestID int64
   Lockname string  // lock name
 }
 
@@ -25,6 +27,8 @@ type LockReply struct {
 // It returns OK=false if the lock was not held.
 //
 type UnlockArgs struct {
+  ClientID int64
+  RequestID int64
   Lockname string
 }
 
