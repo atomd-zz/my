@@ -14,8 +14,11 @@ type ViewServer struct {
   dead bool
   me string
 
-
   // Your declarations here.
+  cv View
+  fv View
+  ack uint
+  pings map[string]uint
 }
 
 //
@@ -23,17 +26,41 @@ type ViewServer struct {
 //
 func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 
-  // Your code here.
+  vs.mu.Lock()
+  defer vs.mu.Unlock()
+
+  if vs.cv.Primary == args.Me && vs.cv.Viewnum != args.Viewnum {
+    vs.pings[args.Me] = DeadPings // primary server error
+  } else {
+    vs.pings[args.Me] = 1
+  }
+
+  if vs.cv.Primary == args.Me && vs.cv.Viewnum == args.Viewnum {
+    vs.ack = args.Viewnum
+  }
+
+  // If the view service has not yet received an acknowledgment for the current
+  // view from the primary of the current view, the view service should not
+  // change views even if it thinks that the primary or backup has died.
+  if vs.fv.Viewnum == vs.cv.Viewnum + 1 && vs.ack == vs.cv.Viewnum &&
+      vs.fv.Primary == args.Me && args.Viewnum == vs.ack {
+    vs.cv = vs.fv
+  }
+
+  reply.View = vs.cv
 
   return nil
 }
 
-// 
+//
 // server Get() RPC handler.
 //
 func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 
-  // Your code here.
+  vs.mu.Lock()
+  defer vs.mu.Unlock()
+
+  reply.View = vs.cv
 
   return nil
 }
@@ -46,7 +73,38 @@ func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 //
 func (vs *ViewServer) tick() {
 
-  // Your code here.
+  vs.mu.Lock()
+  defer vs.mu.Unlock()
+
+  nv := vs.fv // fv is updated or as same as cv
+
+  if vs.pings[nv.Backup] >= DeadPings {
+    nv.Backup = ""
+  }
+
+  if vs.pings[nv.Primary] >= DeadPings && len(nv.Backup) != 0 {
+    nv.Primary, nv.Backup = nv.Backup, "" // try to promote backup server
+  }
+
+  for s, p := range(vs.pings) {
+      if p >= DeadPings {
+          delete(vs.pings, s)
+          continue
+      }
+      vs.pings[s]++
+      if len(nv.Primary) == 0 {
+          nv.Primary = s
+          continue
+      }
+      if len(nv.Backup) == 0 && s != nv.Primary {
+          nv.Backup = s
+          break
+      }
+  }
+
+  if nv != vs.fv {
+      vs.fv = View{vs.cv.Viewnum + 1, nv.Primary, nv.Backup}
+  }
 }
 
 //
@@ -62,7 +120,10 @@ func (vs *ViewServer) Kill() {
 func StartServer(me string) *ViewServer {
   vs := new(ViewServer)
   vs.me = me
-  // Your vs.* initializations here.
+  vs.cv = View{}
+  vs.fv = View{}
+  vs.ack = 0
+  vs.pings = map[string]uint{}
 
   // tell net/rpc about our RPC server and handlers.
   rpcs := rpc.NewServer()
