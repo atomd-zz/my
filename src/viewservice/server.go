@@ -18,7 +18,7 @@ type ViewServer struct {
   cv View
   fv View
   ack uint
-  pings map[string]uint
+  pings map[string] time.Time
 }
 
 //
@@ -29,10 +29,11 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
   vs.mu.Lock()
   defer vs.mu.Unlock()
 
+
   if vs.cv.Primary == args.Me && vs.cv.Viewnum != args.Viewnum {
-    vs.pings[args.Me] = DeadPings // primary server error
+    delete(vs.pings, args.Me)
   } else {
-    vs.pings[args.Me] = 1
+    vs.pings[args.Me] = time.Now()
   }
 
   if vs.cv.Primary == args.Me && vs.cv.Viewnum == args.Viewnum {
@@ -49,6 +50,7 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 
   reply.View = vs.cv
 
+  //log.Printf("[viewserver][ping] num:%d me:%s", args.Viewnum, args.Me)
   return nil
 }
 
@@ -75,36 +77,41 @@ func (vs *ViewServer) tick() {
 
   vs.mu.Lock()
   defer vs.mu.Unlock()
+  nv := vs.cv
 
-  nv := vs.fv // fv is updated or as same as cv
-
-  if vs.pings[nv.Backup] >= DeadPings {
-    nv.Backup = ""
+  for s, t := range(vs.pings) {
+    if time.Since(t) > PingInterval * DeadPings {
+      delete(vs.pings, s)
+    }
   }
 
-  if vs.pings[nv.Primary] >= DeadPings && len(nv.Backup) != 0 {
+  _, pexists := vs.pings[nv.Primary]
+  _, bexists := vs.pings[nv.Backup]
+
+  if pexists && bexists {
+    return
+  } else if !pexists && bexists {
     nv.Primary, nv.Backup = nv.Backup, "" // try to promote backup server
+    pexists, bexists = true, false
   }
 
-  for s, p := range(vs.pings) {
-      if p >= DeadPings {
-          delete(vs.pings, s)
-          continue
-      }
-      vs.pings[s]++
-      if len(nv.Primary) == 0 {
-          nv.Primary = s
-          continue
-      }
-      if len(nv.Backup) == 0 && s != nv.Primary {
-          nv.Backup = s
-          break
-      }
+  once := pexists
+  for s := range(vs.pings) {
+    if !once {
+      nv.Primary = s
+      once = true
+    } else if s != nv.Primary {
+      nv.Backup= s
+      break
+    }
   }
 
-  if nv != vs.fv {
-      vs.fv = View{vs.cv.Viewnum + 1, nv.Primary, nv.Backup}
+  if (pexists || bexists || len(vs.cv.Primary) == 0) && vs.cv != nv {
+    vs.fv = View{vs.cv.Viewnum + 1, nv.Primary, nv.Backup}
   }
+
+  //log.Printf("[viewserver][tick] current num:%d primary:%s backup:%s", vs.cv.Viewnum, vs.cv.Primary, vs.cv.Backup)
+  //log.Printf("[ViewServer][tick] future  num:%d primary:%s backup:%s", vs.fv.Viewnum, vs.fv.Primary, vs.fv.Backup)
 }
 
 //
@@ -123,7 +130,7 @@ func StartServer(me string) *ViewServer {
   vs.cv = View{}
   vs.fv = View{}
   vs.ack = 0
-  vs.pings = map[string]uint{}
+  vs.pings = map[string]time.Time{}
 
   // tell net/rpc about our RPC server and handlers.
   rpcs := rpc.NewServer()
