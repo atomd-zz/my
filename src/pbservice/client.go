@@ -2,17 +2,17 @@ package pbservice
 
 import "viewservice"
 import "net/rpc"
-// You'll probably need to uncomment this:
-// import "time"
-
+import "time"
 
 type Clerk struct {
   vs *viewservice.Clerk
+  p string
 }
 
 func MakeClerk(vshost string, me string) *Clerk {
   ck := new(Clerk)
   ck.vs = viewservice.MakeClerk(me, vshost)
+  ck.p = ""
   return ck
 }
 
@@ -40,7 +40,7 @@ func call(srv string, rpcname string,
     return false
   }
   defer c.Close()
-    
+
   err := c.Call(rpcname, args, reply)
   if err == nil {
     return true
@@ -57,9 +57,21 @@ func call(srv string, rpcname string,
 //
 func (ck *Clerk) Get(key string) string {
 
-  // Your code here.
+  args := &GetArgs{key}
+  var reply GetReply
 
-  return "???"
+  if len(ck.p) == 0 {
+    ck.p = ck.vs.Primary()
+  }
+
+  for {
+    ok := call(ck.p, "PBServer.Get", args, &reply)
+    if ok && reply.Err != ErrWrongServer {
+      return reply.Value
+    }
+    time.Sleep(viewservice.PingInterval)
+    ck.p = ck.vs.Primary()
+  }
 }
 
 //
@@ -68,5 +80,19 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) Put(key string, value string) {
 
-  // Your code here.
+  args := &PutArgs{key, value}
+  var reply PutReply
+
+  if len(ck.p) == 0 {
+    ck.p = ck.vs.Primary()
+  }
+
+  for {
+    ok := call(ck.p, "PBServer.Put", args, &reply)
+    if ok && reply.Err != ErrWrongServer {
+      break
+    }
+    time.Sleep(viewservice.PingInterval)
+    ck.p = ck.vs.Primary()
+  }
 }

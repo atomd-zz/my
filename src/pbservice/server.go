@@ -11,7 +11,6 @@ import "os"
 import "syscall"
 import "math/rand"
 
-
 type PBServer struct {
   mu sync.Mutex
   l net.Listener
@@ -19,25 +18,56 @@ type PBServer struct {
   unreliable bool // for testing
   me string
   vs *viewservice.Clerk
+
   // Your declarations here.
+  kvs map[string]string // key-value store
+  cv viewservice.View
 }
 
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 
-  // Your code here.
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
 
+  if pb.cv.Primary != pb.me {
+    reply.Err = ErrWrongServer
+    return nil
+  }
+
+  if v, ok := pb.kvs[args.Key]; ok {
+    reply.Err = OK
+    reply.Value = v
+  } else {
+    reply.Err = ErrNoKey
+  }
   return nil
 }
 
 func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
+
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
+
+  if pb.cv.Primary != pb.me {
+    reply.Err = ErrWrongServer
+    return nil
+  }
+
+  if len(pb.cv.Backup) != 0 {
+    fwdargs := &ForwardArgs{args.Key, args.Value}
+    var fwdrpy ForwardReply
+
+    ok := call(pb.cv.Backup, "PBServer.Forward", fwdargs, &fwdrpy)
+    if !ok || fwdrpy.Err != OK {
+      reply.Err = ErrWrongServer // Backup server is wrong
+      return nil
+    }
+  }
+
+  pb.kvs[args.Key] = args.Value
   reply.Err = OK
-
-
-  // Your code here.
-
   return nil
 }
-
 
 //
 // ping the viewserver periodically.
@@ -47,7 +77,30 @@ func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
 //
 func (pb *PBServer) tick() {
 
-  // Your code here.
+  var reply SyncReply
+  v, _ := pb.vs.Ping(pb.cv.Viewnum)
+  if v == pb.cv {
+    return
+  }
+
+  // not lock to avoid deadlock
+  if pb.me == v.Backup {
+    args := &SyncArgs{pb.me}
+    ok := call(v.Primary, "PBServer.Sync", args, &reply)
+    if !ok && reply.Err != OK {
+      return
+    }
+  }
+
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
+
+  if pb.me == v.Backup {
+    pb.kvs= reply.KVStore
+  } else if pb.me != v.Primary {
+    pb.kvs= make(map[string]string) // clear kvstore
+  }
+  pb.cv = v
 }
 
 // tell the server to shut itself down.
@@ -57,12 +110,12 @@ func (pb *PBServer) kill() {
   pb.l.Close()
 }
 
-
 func StartServer(vshost string, me string) *PBServer {
   pb := new(PBServer)
   pb.me = me
   pb.vs = viewservice.MakeClerk(me, vshost)
-  // Your pb.* initializations here.
+  pb.kvs= make(map[string]string)
+  pb.cv = viewservice.View{0, "", ""}
 
   rpcs := rpc.NewServer()
   rpcs.Register(pb)
@@ -114,4 +167,31 @@ func StartServer(vshost string, me string) *PBServer {
   }()
 
   return pb
+}
+
+func (pb *PBServer) Sync(args *SyncArgs, reply *SyncReply) error {
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
+
+  if pb.cv.Backup == args.Me && pb.cv.Primary == pb.me {
+    reply.KVStore = pb.kvs
+    reply.Err = OK
+  } else {
+    reply.KVStore = make(map[string]string)
+    reply.Err = ErrWrongServer
+  }
+  return nil
+}
+
+func (pb *PBServer) Forward(args *ForwardArgs, reply *ForwardReply) error {
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
+
+  if pb.cv.Backup == pb.me {
+    pb.kvs[args.Key] = args.Value
+    reply.Err = OK
+  } else {
+    reply.Err = ErrWrongServer
+  }
+  return nil
 }

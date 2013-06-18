@@ -5,6 +5,7 @@ const (
   ErrNoKey = "ErrNoKey"
   ErrWrongServer = "ErrWrongServer"
 )
+
 type Err string
 
 type PutArgs struct {
@@ -25,5 +26,15 @@ type GetReply struct {
   Value string
 }
 
-
 // Your RPC definitions here.
+type SyncArgs struct {
+  Me string
+}
+
+type SyncReply struct {
+  KVStore map[string]string
+  Err Err
+}
+
+type ForwardArgs PutArgs
+type ForwardReply PutReply
