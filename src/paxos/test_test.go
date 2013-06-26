@@ -866,6 +866,7 @@ func TestLots(t *testing.T) {
   part(t, tag, npaxos, []int{0,1,2,3,4}, []int{}, []int{})
   time.Sleep(5 * time.Second)
 
+  fmt.Printf("  ... AAAAAAAAAAAa\n")
   for i := 0; i < seq; i++ {
     waitmajority(t, pxa, i)
   }
